@@ -113,13 +113,15 @@ class MNISTViTAttentionAnalyzer:
         if layer_idx is not None:
             # Extract specific layer
             if layer_idx < len(attentions):
-                attention = attentions[layer_idx][0, 0]  # First batch, first head
-                cls_attention = attention[0, 1:]  # CLS token attention to patches
+                attention = attentions[layer_idx][0]  # [num_heads, seq_len, seq_len]
+                attention_avg = attention.mean(dim=0)  # Average across heads
+                cls_attention = attention_avg[0, 1:]  # CLS token attention to patches
                 attention_maps.append(cls_attention)
         else:
             # Extract all layers
             for layer_idx in range(len(attentions)):
-                attention = attentions[layer_idx][0, 0]  # First batch, first head
+                attention = attentions[layer_idx][0]  # [num_heads, seq_len, seq_len]
+                attention = attention.mean(dim=0)  # Average across heads
                 cls_attention = attention[0, 1:]  # CLS token attention to patches
                 attention_maps.append(cls_attention)
 
@@ -239,7 +241,7 @@ class MNISTViTAttentionAnalyzer:
         # Focus on middle layers where concepts emerge
         for i, layer_idx in enumerate(Config.MIDDLE_LAYERS):
             if layer_idx < len(attention_maps):
-                attention_map = attention_maps[layer_idx]
+                attention_map = attention_maps[layer_idx]  # This is now pre-averaged across heads
                 attention_2d = attention_map.reshape(14, 14)
 
                 stats[f'layer_{layer_idx}'] = {

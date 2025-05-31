@@ -23,7 +23,7 @@ class Config:
     TEST_DATASET_SIZE = 5000
     
     # MLP configurations
-    MLP_INPUT_SIZE = 588  # 3 layers * 196 patches = 588
+    MLP_INPUT_SIZE = 603  # 3 layers * (196 + 5) = 603 (196 spatial + 5 statistics per layer)
     MLP_HIDDEN_SIZE_1 = 256
     MLP_HIDDEN_SIZE_2 = 128
     MLP_DROPOUT = 0.3

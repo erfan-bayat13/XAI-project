@@ -75,9 +75,31 @@ def extract_attention_features(vit_model: nn.Module,
         middle_attentions = []
         for layer_idx in middle_layers:
             if layer_idx < len(attentions):
-                attention = attentions[layer_idx][0, 0]  # [seq_len, seq_len]
-                cls_attention = attention[0, 1:]  # CLS token attention to patches [196]
-                middle_attentions.append(cls_attention)
+                attention = attentions[layer_idx][0]  # [num_heads, seq_len, seq_len]
+                attention_avg = attention.mean(dim=0)  # Average across heads
+                
+                # Extract multiple types of features:
+                # 1. CLS attention to patches
+                cls_attention = attention_avg[0, 1:]  # [196]
+                
+                # 2. Attention statistics
+                attention_flat = attention_avg.flatten()
+                entropy = -torch.sum(attention_flat * torch.log(attention_flat + 1e-8))
+                concentration = torch.sum(attention_flat ** 2)
+                max_attention = torch.max(attention_flat)
+                
+                # 3. Spatial patterns
+                spatial_attention = cls_attention.reshape(14, 14)
+                spatial_std = spatial_attention.std()
+                spatial_mean = spatial_attention.mean()
+                
+                # Combine all features
+                layer_features = torch.cat([
+                    cls_attention,  # [196] - spatial attention
+                    torch.tensor([entropy, concentration, max_attention, spatial_std, spatial_mean], 
+                            device=device, dtype=cls_attention.dtype)  # [5] - statistics
+                ])
+                middle_attentions.append(layer_features)
 
         # Concatenate all middle layer attentions
         attention_features = torch.cat(middle_attentions, dim=0)  # [588]

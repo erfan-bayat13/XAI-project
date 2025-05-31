@@ -28,19 +28,35 @@ class AttentionToConceptMLP(nn.Module):
         """
         super().__init__()
         self.mlp = nn.Sequential(
+            # Input normalization
+            nn.BatchNorm1d(input_size),
+
+            # First layer
             nn.Linear(input_size, Config.MLP_HIDDEN_SIZE_1),
+            nn.BatchNorm1d(Config.MLP_HIDDEN_SIZE_1),
             nn.ReLU(),
             nn.Dropout(Config.MLP_DROPOUT),
+
+            # Second layer
             nn.Linear(Config.MLP_HIDDEN_SIZE_1, Config.MLP_HIDDEN_SIZE_2),
+            nn.BatchNorm1d(Config.MLP_HIDDEN_SIZE_2),
             nn.ReLU(),
             nn.Dropout(Config.MLP_DROPOUT),
+            # Output layer
             nn.Linear(Config.MLP_HIDDEN_SIZE_2, num_concepts)
         )
+        self.apply(self._init_weights)
         
         print(f"✅ MLP Attention-to-Concept created:")
         print(f"   📐 Input size: {input_size}")
         print(f"   🧠 Hidden sizes: {Config.MLP_HIDDEN_SIZE_1}, {Config.MLP_HIDDEN_SIZE_2}")
         print(f"   🎯 Output concepts: {num_concepts}")
+    
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            torch.nn.init.xavier_uniform_(module.weight)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
 
     def forward(self, attention_features: torch.Tensor) -> torch.Tensor:
         """Forward pass through the MLP"""
@@ -67,7 +83,9 @@ def extract_attention_features(vit_model: nn.Module,
         if len(image.shape) == 3:
             image = image.unsqueeze(0)
 
-        # The model returns a dictionary, access attentions via key
+        # CRITICAL FIX: Make sure VIT model is in eval mode
+        vit_model.eval()
+        
         outputs = vit_model(image.to(device), output_attentions=True)
         attentions = outputs['attentions']
 
@@ -84,7 +102,13 @@ def extract_attention_features(vit_model: nn.Module,
                 
                 # 2. Attention statistics
                 attention_flat = attention_avg.flatten()
-                entropy = -torch.sum(attention_flat * torch.log(attention_flat + 1e-8))
+                
+                # FIX: Add small epsilon to prevent log(0)
+                attention_flat = attention_flat + 1e-8
+                # FIX: Normalize attention to make it a proper probability distribution
+                attention_flat = attention_flat / attention_flat.sum()
+                
+                entropy = -torch.sum(attention_flat * torch.log(attention_flat))
                 concentration = torch.sum(attention_flat ** 2)
                 max_attention = torch.max(attention_flat)
                 
@@ -93,17 +117,31 @@ def extract_attention_features(vit_model: nn.Module,
                 spatial_std = spatial_attention.std()
                 spatial_mean = spatial_attention.mean()
                 
+                # FIX: Normalize all features to similar scales
+                # CLS attention is already in [0,1] range after softmax
+                # Normalize statistics to [0,1] range
+                entropy_norm = entropy / torch.log(torch.tensor(196.0))  # Max possible entropy
+                concentration_norm = concentration  # Already in reasonable range
+                max_attention_norm = max_attention  # Already in [0,1]
+                spatial_std_norm = spatial_std / spatial_attention.max()  # Normalize by max
+                spatial_mean_norm = spatial_mean  # Already normalized
+                
                 # Combine all features
                 layer_features = torch.cat([
                     cls_attention,  # [196] - spatial attention
-                    torch.tensor([entropy, concentration, max_attention, spatial_std, spatial_mean], 
-                            device=device, dtype=cls_attention.dtype)  # [5] - statistics
+                    torch.tensor([entropy_norm, concentration_norm, max_attention_norm, 
+                                spatial_std_norm, spatial_mean_norm], 
+                               device=device, dtype=cls_attention.dtype)  # [5] - statistics
                 ])
                 middle_attentions.append(layer_features)
 
         # Concatenate all middle layer attentions
-        attention_features = torch.cat(middle_attentions, dim=0)  # [588]
-        return attention_features.unsqueeze(0)  # [1, 588]
+        if middle_attentions:
+            attention_features = torch.cat(middle_attentions, dim=0)  # [603]
+            return attention_features.unsqueeze(0)  # [1, 603]
+        else:
+            # Fallback if no attention found
+            return torch.zeros(1, Config.MLP_INPUT_SIZE, device=device)
 
 
 def train_attention_to_concept_mlp(vit_model: nn.Module,
@@ -128,37 +166,72 @@ def train_attention_to_concept_mlp(vit_model: nn.Module,
     """
     print("🧠 Training Attention-to-Concept MLP...")
 
+    # FIX: Ensure ViT model is in eval mode and on correct device
+    vit_model.eval()
+    vit_model.to(device)
+
     # Initialize MLP
     mlp = AttentionToConceptMLP().to(device)
-    optimizer = torch.optim.Adam(mlp.parameters(), lr=learning_rate)
-    criterion = nn.CrossEntropyLoss()
+    
+    # FIX: Use different learning rate and optimizer settings
+    optimizer = torch.optim.Adam(mlp.parameters(), lr=learning_rate, weight_decay=1e-4)
+    
+    # FIX: Use label smoothing to help with learning
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
+    
+    # FIX: Add learning rate scheduler
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=5, factor=0.5)
 
     # Prepare training data
     print("📊 Extracting attention features from training data...")
     attention_features = []
     concept_labels = []
 
-    # Limiting training data size for demo/speed
+    # FIX: Use smaller sample size initially to debug
     num_samples = min(max_samples, len(train_dataset))
+    print(f"Processing {num_samples} samples...")
+    
     for i in range(num_samples):
-        image, concept, task = train_dataset[i]
+        try:
+            image, concept, task = train_dataset[i]
 
-        # Extract attention features
-        features = extract_attention_features(vit_model, image, device=device)
-        attention_features.append(features.squeeze(0))
-        concept_labels.append(concept)
+            # Extract attention features
+            features = extract_attention_features(vit_model, image, device=device)
+            
+            # FIX: Check for valid features
+            if features is not None and not torch.isnan(features).any():
+                attention_features.append(features.squeeze(0))
+                concept_labels.append(concept)
+            else:
+                print(f"⚠️ Invalid features at sample {i}")
 
-        if (i + 1) % 200 == 0 or (i + 1) == num_samples:
-            print(f"   Processed {i+1}/{num_samples} samples")
+            if (i + 1) % 200 == 0 or (i + 1) == num_samples:
+                print(f"   Processed {i+1}/{num_samples} samples")
+                
+        except Exception as e:
+            print(f"⚠️ Error processing sample {i}: {e}")
+            continue
+
+    if len(attention_features) == 0:
+        raise ValueError("No valid features extracted! Check ViT model and feature extraction.")
 
     # Convert to tensors
     X = torch.stack(attention_features).to(device)
-    y = torch.tensor(concept_labels).to(device)
+    y = torch.tensor(concept_labels, dtype=torch.long).to(device)
 
-    print(f"✅ Training data prepared: {X.shape[0]} samples")
+    print(f"✅ Training data prepared: {X.shape[0]} samples, feature shape: {X.shape[1]}")
+    print(f"Feature range: [{X.min():.4f}, {X.max():.4f}]")
+    print(f"Label distribution: {torch.bincount(y)}")
+
+    # FIX: Check for NaN or infinite values
+    if torch.isnan(X).any() or torch.isinf(X).any():
+        print("⚠️ NaN or Inf values in features, cleaning...")
+        X = torch.nan_to_num(X, nan=0.0, posinf=1.0, neginf=0.0)
 
     # Training loop
     mlp.train()
+    best_loss = float('inf')
+    
     for epoch in range(epochs):
         # Shuffle data
         perm = torch.randperm(X.shape[0])
@@ -169,7 +242,7 @@ def train_attention_to_concept_mlp(vit_model: nn.Module,
         correct = 0
 
         # Mini-batch training
-        batch_size = 64
+        batch_size = 32  # FIX: Smaller batch size
         num_batches = (X.shape[0] + batch_size - 1) // batch_size
 
         for i in range(0, X.shape[0], batch_size):
@@ -180,9 +253,18 @@ def train_attention_to_concept_mlp(vit_model: nn.Module,
             outputs = mlp(batch_X)
             loss = criterion(outputs, batch_y)
 
+            # FIX: Check for NaN loss
+            if torch.isnan(loss):
+                print(f"⚠️ NaN loss at epoch {epoch}, batch {i//batch_size}")
+                continue
+
             # Backward pass
             optimizer.zero_grad()
             loss.backward()
+            
+            # FIX: Gradient clipping
+            torch.nn.utils.clip_grad_norm_(mlp.parameters(), max_norm=1.0)
+            
             optimizer.step()
 
             total_loss += loss.item()
@@ -190,9 +272,20 @@ def train_attention_to_concept_mlp(vit_model: nn.Module,
             correct += (predicted == batch_y).sum().item()
 
         accuracy = 100 * correct / X.shape[0]
-        # Use num_batches for average loss calculation
         avg_loss = total_loss / num_batches if num_batches > 0 else 0
-        print(f"Epoch {epoch+1}/{epochs}: Loss={avg_loss:.4f}, Accuracy={accuracy:.2f}%")
+        
+        # Update learning rate
+        scheduler.step(avg_loss)
+        current_lr = optimizer.param_groups[0]['lr']
+        
+        print(f"Epoch {epoch+1}/{epochs}: Loss={avg_loss:.4f}, Accuracy={accuracy:.2f}%, LR={current_lr:.6f}")
+        
+        # Early stopping
+        if avg_loss < best_loss:
+            best_loss = avg_loss
+        elif epoch > 10 and accuracy < 15:  # If stuck at random performance
+            print("⚠️ Training seems stuck, stopping early")
+            break
 
     print("✅ MLP training complete!")
     mlp.eval()

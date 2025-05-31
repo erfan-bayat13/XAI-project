@@ -66,7 +66,7 @@ class FGSMAttackGenerator:
         else:
             # Untargeted attack: maximize loss for true class
             true_task_tensor = torch.tensor([true_task]).to(self.device)
-            loss = nn.CrossEntropyLoss()(logits, true_task_tensor)
+            loss = -nn.CrossEntropyLoss()(logits, true_task_tensor)
 
         # Backward pass to get gradients
         self.model.zero_grad()

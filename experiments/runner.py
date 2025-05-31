@@ -4,14 +4,14 @@ Experiment Runner for XAI Adversarial Detection
 import torch
 import numpy as np
 from typing import Dict, Any, List, Tuple
-from ..config import Config
-from ..datasets.mnist_evenodd import create_data_loaders
-from ..models.vit_wrapper import MNISTViTWrapper, train_even_odd_classifier, evaluate_model
-from ..models.mlp_concept import AttentionToConceptMLP, train_attention_to_concept_mlp, detect_adversarial_with_mlp
-from ..analyzers.attention_analyzer import MNISTViTAttentionAnalyzer
-from ..analyzers.concept_detector import ConceptBasedDetector
-from ..attacks.fgsm_generator import FGSMAttackGenerator
-from ..utils.visualization import (visualize_adversarial_comparison, plot_detection_scores_distribution,
+from config import Config
+from datasets.mnist_evenodd import create_data_loaders
+from models.vit_wrapper import MNISTViTWrapper, train_even_odd_classifier, evaluate_model
+from models.mlp_concept import AttentionToConceptMLP, train_attention_to_concept_mlp, detect_adversarial_with_mlp
+from analyzers.attention_analyzer import MNISTViTAttentionAnalyzer
+from analyzers.concept_detector import ConceptBasedDetector
+from attacks.fgsm_generator import FGSMAttackGenerator
+from utils.visualization import (visualize_adversarial_comparison, plot_detection_scores_distribution,
                                   plot_detection_performance_metrics, plot_epsilon_vs_performance)
 
 

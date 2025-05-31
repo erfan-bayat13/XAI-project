@@ -7,7 +7,7 @@ import torchvision.transforms as transforms
 import numpy as np
 import matplotlib.pyplot as plt
 from typing import Tuple, Dict, Any
-from ..config import Config
+from config import Config
 
 
 class MNISTEvenOdd(torchvision.datasets.MNIST):

@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
 from typing import List, Dict, Any, Tuple
-from ..config import Config
+from config import Config
 
 
 def visualize_adversarial_comparison(vit_analyzer,

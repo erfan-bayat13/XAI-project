@@ -8,7 +8,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from transformers import ViTImageProcessor
 from typing import Tuple, List, Dict, Any, Optional
-from ..config import Config
+from config import Config
 
 
 class MNISTViTAttentionAnalyzer:

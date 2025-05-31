@@ -4,7 +4,7 @@ FGSM Attack Generator for MNIST Even-Odd Classification
 import torch
 import torch.nn as nn
 from typing import Dict, Any, Optional, List
-from ..config import Config
+from config import Config
 
 
 class FGSMAttackGenerator:

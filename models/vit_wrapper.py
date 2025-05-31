@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 from transformers import ViTForImageClassification
 from typing import Dict, Any, Optional
-from ..config import Config
+from config import Config
 
 
 class MNISTViTWrapper(nn.Module):

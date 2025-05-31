@@ -6,7 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from typing import List, Dict, Any, Tuple
-from ..config import Config
+from config import Config
 
 
 class AttentionToConceptMLP(nn.Module):

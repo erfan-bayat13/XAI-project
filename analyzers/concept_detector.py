@@ -4,7 +4,7 @@ Concept-Based Adversarial Detector using attention-concept inconsistencies
 import torch
 import numpy as np
 from typing import Dict, Any, List
-from ..config import Config
+from config import Config
 
 
 class ConceptBasedDetector:

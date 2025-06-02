@@ -1,17 +1,18 @@
 """
 Vision Transformer Wrapper for MNIST Even-Odd Classification
+Updated for ART (Adversarial Robustness Toolbox) compatibility
 """
 import torch
 import torch.nn as nn
 from transformers import ViTForImageClassification
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Union
 from config import Config
 
 
 class MNISTViTWrapper(nn.Module):
     """
     Wrapper around pre-trained ViT for MNIST Even-Odd classification
-    Keeps the ViT backbone frozen and adds a new classification head
+    Compatible with ART (Adversarial Robustness Toolbox)
     """
 
     def __init__(self, model_name: str = Config.VIT_MODEL_NAME, num_classes: int = 2):
@@ -55,17 +56,22 @@ class MNISTViTWrapper(nn.Module):
         print(f"   🔒 ViT parameters: Frozen")
         print(f"   🎯 Task: {num_classes}-class classification (Even/Odd)")
         print(f"   📐 Hidden size: {hidden_size}")
+        print(f"   🛡️ ART Compatible: True")
 
-    def forward(self, pixel_values: torch.Tensor, output_attentions: bool = True) -> Dict[str, Any]:
+    def forward(self, pixel_values: torch.Tensor, 
+               output_attentions: bool = True,
+               return_dict: bool = False) -> Union[torch.Tensor, Dict[str, Any]]:
         """
         Forward pass through the model
+        Compatible with both ART (expects logits) and analysis (expects dict)
         
         Args:
             pixel_values: Input image tensor
             output_attentions: Whether to output attention weights
+            return_dict: Whether to return dictionary (for analysis) or tensor (for ART)
             
         Returns:
-            Dictionary containing logits, attentions, hidden_states, and cls_token
+            Either logits tensor (for ART) or dictionary with detailed outputs (for analysis)
         """
         # Get ViT features and attention
         vit_outputs = self.vit.vit(
@@ -81,12 +87,17 @@ class MNISTViTWrapper(nn.Module):
         # Classification
         logits = self.classifier(cls_token)
 
-        return {
-            'logits': logits,
-            'attentions': vit_outputs.attentions if output_attentions else None,
-            'hidden_states': vit_outputs.hidden_states,
-            'cls_token': cls_token
-        }
+        if return_dict:
+            # Return dictionary for analysis code
+            return {
+                'logits': logits,
+                'attentions': vit_outputs.attentions if output_attentions else None,
+                'hidden_states': vit_outputs.hidden_states,
+                'cls_token': cls_token
+            }
+        else:
+            # Return logits tensor for ART compatibility
+            return logits
 
     def freeze_vit(self):
         """Freeze ViT parameters"""
@@ -114,12 +125,70 @@ class MNISTViTWrapper(nn.Module):
         else:
             self.load_state_dict(torch.load(path, map_location='cpu'))
         print(f"✅ Loaded model from '{path}'")
+        
+    def train_mode(self):
+        """Set model to training mode and ensure gradients for classifier"""
+        self.train()
+        # Ensure ViT stays frozen
+        self.freeze_vit()
+        # Enable gradients for classifier
+        for param in self.classifier.parameters():
+            param.requires_grad = True
+
+    def eval_mode(self):
+        """Set model to evaluation mode"""
+        self.eval()
+        # Note: Don't disable gradients here as ART needs them for attacks
+
+
+class ARTCompatibleWrapper(nn.Module):
+    """
+    Additional wrapper specifically for ART that ensures clean forward pass
+    """
+    
+    def __init__(self, vit_wrapper: MNISTViTWrapper):
+        """
+        Initialize ART-compatible wrapper
+        
+        Args:
+            vit_wrapper: The MNISTViTWrapper instance
+        """
+        super(ARTCompatibleWrapper, self).__init__()
+        self.vit_wrapper = vit_wrapper
+    
+    def forward(self, x: torch.Tensor, **kwargs) -> torch.Tensor:
+        """
+        Clean forward pass that returns only logits (required by ART)
+        
+        Args:
+            x: Input tensor
+            **kwargs: Additional arguments (ignored for ART compatibility)
+            
+        Returns:
+            Logits tensor
+        """
+        # Ensure we get only logits, not a dictionary
+        # Always use output_attentions=False and return_dict=False for ART
+        output = self.vit_wrapper(x, output_attentions=False, return_dict=False)
+        return output
+
+    def train(self, mode: bool = True):
+        """Override train method to properly handle training mode"""
+        super().train(mode)
+        self.vit_wrapper.train(mode)
+        return self
+
+    def eval(self):
+        """Override eval method to properly handle evaluation mode"""
+        super().eval()
+        self.vit_wrapper.eval()
+        return self
 
 
 def train_even_odd_classifier(model: MNISTViTWrapper, 
                              train_loader: torch.utils.data.DataLoader, 
                              epochs: int = Config.EVEN_ODD_EPOCHS,
-                             device: torch.device = Config.DEVICE) -> None:
+                             device: torch.device = Config.DEVICE) -> Dict[str, float]:
     """
     Train the Even/Odd classification head
     
@@ -128,15 +197,19 @@ def train_even_odd_classifier(model: MNISTViTWrapper,
         train_loader: Training data loader
         epochs: Number of training epochs
         device: Device to train on
+        
+    Returns:
+        Training results dictionary
     """
     print("🏋️ Training Even/Odd classifier...")
+
+    # Set model to training mode
+    model.train_mode()
+    model.to(device)
 
     # Only train the classifier head (ViT backbone is frozen)
     optimizer = torch.optim.Adam(model.classifier.parameters(), lr=0.001)
     criterion = nn.CrossEntropyLoss()
-
-    model.train()
-    model.to(device)
 
     for epoch in range(epochs):
         total_loss = 0
@@ -146,8 +219,8 @@ def train_even_odd_classifier(model: MNISTViTWrapper,
         for batch_idx, (images, concepts, tasks) in enumerate(train_loader):
             images, tasks = images.to(device), tasks.to(device)
 
-            # Forward pass
-            outputs = model(images, output_attentions=False)  # Skip attention for training speed
+            # Forward pass (get dictionary output for training)
+            outputs = model(images, output_attentions=False, return_dict=True)
             loss = criterion(outputs['logits'], tasks)
 
             # Backward pass
@@ -169,11 +242,18 @@ def train_even_odd_classifier(model: MNISTViTWrapper,
         epoch_loss = total_loss / len(train_loader)
         print(f'✅ Epoch {epoch+1}/{epochs} - Loss: {epoch_loss:.4f}, Accuracy: {epoch_acc:.2f}%')
 
-    model.eval()
+    # Set model back to eval mode
+    model.eval_mode()
     print(f"🎉 Training complete!")
 
     # Save the trained model
     model.save_model()
+    
+    return {
+        'final_loss': epoch_loss,
+        'final_accuracy': epoch_acc,
+        'epochs_completed': epochs
+    }
 
 
 def evaluate_model(model: MNISTViTWrapper,
@@ -192,7 +272,7 @@ def evaluate_model(model: MNISTViTWrapper,
     """
     print("📊 Evaluating model on test set...")
     
-    model.eval()
+    model.eval_mode()
     model.to(device)
     
     correct = 0
@@ -206,7 +286,8 @@ def evaluate_model(model: MNISTViTWrapper,
         for images, concepts, tasks in test_loader:
             images, tasks = images.to(device), tasks.to(device)
             
-            outputs = model(images, output_attentions=False)
+            # Get predictions (use return_dict=True for consistency)
+            outputs = model(images, output_attentions=False, return_dict=True)
             _, predicted = torch.max(outputs['logits'].data, 1)
             
             total += tasks.size(0)
@@ -237,3 +318,18 @@ def evaluate_model(model: MNISTViTWrapper,
         'per_digit_accuracy': per_digit_accuracy,
         'total_samples': total
     }
+
+
+def create_art_compatible_model(vit_wrapper: MNISTViTWrapper) -> ARTCompatibleWrapper:
+    """
+    Create an ART-compatible version of the model
+    
+    Args:
+        vit_wrapper: The trained ViT wrapper
+        
+    Returns:
+        ART-compatible wrapper
+    """
+    art_model = ARTCompatibleWrapper(vit_wrapper)
+    art_model.eval()
+    return art_model

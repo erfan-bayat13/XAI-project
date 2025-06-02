@@ -1,12 +1,12 @@
 """
-Experiment Runner for XAI Adversarial Detection
+Experiment Runner for XAI Adversarial Detection with ART Integration
 """
 import torch
 import numpy as np
 from typing import Dict, Any, List, Tuple
 from config import Config
 from datasets.mnist_evenodd import create_data_loaders
-from models.vit_wrapper import MNISTViTWrapper, train_even_odd_classifier, evaluate_model
+from models.vit_wrapper import MNISTViTWrapper, train_even_odd_classifier, evaluate_model, create_art_compatible_model
 from models.mlp_concept import AttentionToConceptMLP, train_attention_to_concept_mlp, detect_adversarial_with_mlp
 from analyzers.attention_analyzer import MNISTViTAttentionAnalyzer
 from analyzers.concept_detector import ConceptBasedDetector
@@ -17,7 +17,7 @@ from utils.visualization import (visualize_adversarial_comparison, plot_detectio
 
 class ExperimentRunner:
     """
-    Main experiment runner for XAI Adversarial Detection
+    Main experiment runner for XAI Adversarial Detection with ART integration
     """
     
     def __init__(self, data_root: str = './data'):
@@ -38,12 +38,13 @@ class ExperimentRunner:
         self.concept_profiles = None
         
         self.vit_model = None
+        self.art_compatible_model = None  # New: ART-compatible wrapper
         self.vit_analyzer = None
         self.mlp_model = None
         self.concept_detector = None
         self.fgsm_attacker = None
         
-        print(f"🚀 Experiment Runner initialized on {self.device}")
+        print(f"🚀 Experiment Runner (ART-enabled) initialized on {self.device}")
         Config.print_config()
 
     def setup_datasets(self) -> None:
@@ -71,7 +72,7 @@ class ExperimentRunner:
         self.train_dataset.visualize_samples()
 
     def setup_models(self) -> None:
-        """Setup ViT model and analyzer"""
+        """Setup ViT model and ART-compatible wrapper"""
         print("\n" + "="*60)
         print("🧠 SETTING UP MODELS")
         print("="*60)
@@ -79,13 +80,17 @@ class ExperimentRunner:
         # Initialize ViT wrapper
         self.vit_model = MNISTViTWrapper()
         
-        # Initialize attention analyzer
+        # Create ART-compatible wrapper
+        self.art_compatible_model = create_art_compatible_model(self.vit_model)
+        
+        # Initialize attention analyzer (uses original model)
         self.vit_analyzer = MNISTViTAttentionAnalyzer(self.vit_model)
         
-        # Initialize FGSM attacker
-        self.fgsm_attacker = FGSMAttackGenerator(self.vit_model)
+        # Initialize FGSM attacker with ART integration
+        self.fgsm_attacker = FGSMAttackGenerator(self.art_compatible_model)
         
         print("✅ Models initialized successfully")
+        print("✅ ART integration configured")
 
     def train_even_odd_classifier(self, epochs: int = Config.EVEN_ODD_EPOCHS) -> Dict[str, float]:
         """
@@ -102,10 +107,17 @@ class ExperimentRunner:
         print("="*60)
         
         # Train the classifier
-        train_even_odd_classifier(self.vit_model, self.train_loader, epochs=epochs)
+        results = train_even_odd_classifier(self.vit_model, self.train_loader, epochs=epochs)
+        
+        # Update ART-compatible model with trained weights
+        self.art_compatible_model = create_art_compatible_model(self.vit_model)
+        
+        # Update FGSM attacker with newly trained model
+        self.fgsm_attacker = FGSMAttackGenerator(self.art_compatible_model)
         
         # Evaluate on test set
-        results = evaluate_model(self.vit_model, self.test_loader)
+        eval_results = evaluate_model(self.vit_model, self.test_loader)
+        results.update(eval_results)
         
         return results
 
@@ -183,82 +195,109 @@ class ExperimentRunner:
 
     def generate_adversarial_samples(self, 
                                    epsilon_values: List[float] = None,
-                                   samples_per_digit: int = 5) -> Dict[float, Dict[int, Dict[str, Any]]]:
+                                   samples_per_digit: int = 5,
+                                   attack_types: List[str] = None) -> Dict[str, Dict[float, Dict[int, Dict[str, Any]]]]:
         """
-        Generate adversarial samples for different epsilon values
+        Generate adversarial samples using ART for different epsilon values and attack types
         
         Args:
             epsilon_values: List of epsilon values to test
             samples_per_digit: Number of samples per digit
+            attack_types: List of attack types to use
             
         Returns:
-            Dictionary mapping epsilon to adversarial samples
+            Dictionary mapping attack_type -> epsilon -> adversarial samples
         """
         print("\n" + "="*60)
-        print("⚡ GENERATING ADVERSARIAL SAMPLES")
+        print("⚡ GENERATING ADVERSARIAL SAMPLES (ART)")
         print("="*60)
         
         if epsilon_values is None:
             epsilon_values = Config.FGSM_EPSILON_VALUES
         
-        adversarial_samples = {}
+        if attack_types is None:
+            attack_types = ["fgsm", "pgd"]
         
-        for epsilon in epsilon_values:
-            print(f"\n🎯 Generating attacks with epsilon = {epsilon}")
-            
-            epsilon_samples = {}
-            
-            for digit in range(10):
-                digit_samples = []
-                count = 0
-                
-                for i, (image, concept, task) in enumerate(self.test_dataset):
-                    if concept == digit and count < samples_per_digit:
-                        # Generate adversarial example
-                        adv_image = self.fgsm_attacker.generate_fgsm_attack(
-                            image, task, epsilon=epsilon
-                        )
-                        
-                        # Test attack success
-                        attack_result = self.fgsm_attacker.test_attack_success(
-                            image, adv_image, task
-                        )
-                        
-                        digit_samples.append({
-                            'original_image': image,
-                            'adversarial_image': adv_image.squeeze(0),
-                            'concept': concept,
-                            'task': task,
-                            'attack_result': attack_result
-                        })
-                        
-                        count += 1
-                
-                epsilon_samples[digit] = digit_samples
-            
-            adversarial_samples[epsilon] = epsilon_samples
-            
-            # Print summary for this epsilon
-            total_attacks = sum(len(samples) for samples in epsilon_samples.values())
-            successful_attacks = sum(
-                sum(1 for sample in samples if sample['attack_result']['attack_success'])
-                for samples in epsilon_samples.values()
-            )
-            success_rate = successful_attacks / total_attacks if total_attacks > 0 else 0
-            
-            print(f"   📈 Attack Success Rate: {success_rate:.3f} ({successful_attacks}/{total_attacks})")
+        all_adversarial_samples = {}
         
-        return adversarial_samples
+        for attack_type in attack_types:
+            print(f"\n🎯 Generating {attack_type.upper()} attacks...")
+            attack_samples = {}
+            
+            for epsilon in epsilon_values:
+                print(f"\n   Epsilon = {epsilon}")
+                
+                epsilon_samples = {}
+                
+                for digit in range(10):
+                    digit_samples = []
+                    count = 0
+                    
+                    for i, (image, concept, task) in enumerate(self.test_dataset):
+                        if concept == digit and count < samples_per_digit:
+                            try:
+                                # Generate adversarial example using ART
+                                if attack_type == "fgsm":
+                                    adv_image = self.fgsm_attacker.generate_fgsm_attack(
+                                        image, task, epsilon=epsilon
+                                    )
+                                elif attack_type == "pgd":
+                                    adv_image = self.fgsm_attacker.generate_pgd_attack(
+                                        image, task, epsilon=epsilon, max_iter=10
+                                    )
+                                else:
+                                    print(f"⚠️ Unsupported attack type: {attack_type}")
+                                    continue
+                                
+                                # Test attack success
+                                attack_result = self.fgsm_attacker.test_attack_success(
+                                    image, adv_image, task
+                                )
+                                
+                                digit_samples.append({
+                                    'original_image': image,
+                                    'adversarial_image': adv_image.squeeze(0) if len(adv_image.shape) == 4 else adv_image,
+                                    'concept': concept,
+                                    'task': task,
+                                    'attack_result': attack_result,
+                                    'attack_type': attack_type
+                                })
+                                
+                                count += 1
+                                
+                            except Exception as e:
+                                print(f"⚠️ Error generating {attack_type} attack for digit {digit}: {e}")
+                                continue
+                    
+                    epsilon_samples[digit] = digit_samples
+                
+                attack_samples[epsilon] = epsilon_samples
+                
+                # Print summary for this epsilon and attack type
+                total_attacks = sum(len(samples) for samples in epsilon_samples.values())
+                successful_attacks = sum(
+                    sum(1 for sample in samples if sample['attack_result']['attack_success'])
+                    for samples in epsilon_samples.values()
+                )
+                success_rate = successful_attacks / total_attacks if total_attacks > 0 else 0
+                
+                print(f"   📈 {attack_type.upper()} Success Rate (ε={epsilon}): {success_rate:.3f} ({successful_attacks}/{total_attacks})")
+            
+            all_adversarial_samples[attack_type] = attack_samples
+        
+        return all_adversarial_samples
 
     def test_detection_methods(self, 
-                             adversarial_samples: Dict[float, Dict[int, Dict[str, Any]]],
-                             epsilon: float = Config.DEFAULT_EPSILON) -> Dict[str, Any]:
+                             adversarial_samples: Dict[str, Dict[float, Dict[int, Dict[str, Any]]]],
+                             epsilon: float = Config.DEFAULT_EPSILON,
+                             attack_type: str = "fgsm") -> Dict[str, Any]:
         """
         Test both statistical and MLP-based detection methods
         
         Args:
             adversarial_samples: Generated adversarial samples
             epsilon: Epsilon value to test
+            attack_type: Attack type to test
             
         Returns:
             Detection results dictionary
@@ -267,26 +306,31 @@ class ExperimentRunner:
         print("🛡️ TESTING DETECTION METHODS")
         print("="*60)
         
-        if epsilon not in adversarial_samples:
-            print(f"❌ No samples found for epsilon {epsilon}")
+        if attack_type not in adversarial_samples:
+            print(f"❌ No samples found for attack type {attack_type}")
             return {}
         
-        epsilon_samples = adversarial_samples[epsilon]
+        if epsilon not in adversarial_samples[attack_type]:
+            print(f"❌ No samples found for epsilon {epsilon} with {attack_type}")
+            return {}
+        
+        epsilon_samples = adversarial_samples[attack_type][epsilon]
         
         # Test statistical detection
-        print(f"\n📊 Testing Statistical Detection (ε={epsilon})")
+        print(f"\n📊 Testing Statistical Detection ({attack_type.upper()}, ε={epsilon})")
         statistical_results = self._test_statistical_detection(epsilon_samples)
         
         # Test MLP detection (if MLP is trained)
         mlp_results = {}
         if self.mlp_model is not None:
-            print(f"\n🧠 Testing MLP Detection (ε={epsilon})")
+            print(f"\n🧠 Testing MLP Detection ({attack_type.upper()}, ε={epsilon})")
             mlp_results = self._test_mlp_detection(epsilon_samples)
         
         return {
             'statistical_detection': statistical_results,
             'mlp_detection': mlp_results,
-            'epsilon': epsilon
+            'epsilon': epsilon,
+            'attack_type': attack_type
         }
 
     def _test_statistical_detection(self, epsilon_samples: Dict[int, Dict[str, Any]]) -> Dict[str, Any]:
@@ -374,33 +418,41 @@ class ExperimentRunner:
         return results
 
     def run_comprehensive_evaluation(self, 
-                                   epsilon_values: List[float] = None) -> Dict[str, Any]:
+                                   epsilon_values: List[float] = None,
+                                   attack_types: List[str] = None) -> Dict[str, Any]:
         """
-        Run comprehensive evaluation across multiple epsilon values
+        Run comprehensive evaluation across multiple epsilon values and attack types
         
         Args:
             epsilon_values: List of epsilon values to evaluate
+            attack_types: List of attack types to evaluate
             
         Returns:
             Comprehensive evaluation results
         """
         print("\n" + "="*60)
-        print("🔬 COMPREHENSIVE EVALUATION")
+        print("🔬 COMPREHENSIVE EVALUATION (ART)")
         print("="*60)
         
         if epsilon_values is None:
             epsilon_values = Config.FGSM_EPSILON_VALUES
         
-        # Generate adversarial samples for all epsilon values
-        adversarial_samples = self.generate_adversarial_samples(epsilon_values)
+        if attack_types is None:
+            attack_types = ["fgsm", "pgd"]
         
-        # Test detection for each epsilon
+        # Generate adversarial samples for all combinations
+        adversarial_samples = self.generate_adversarial_samples(epsilon_values, attack_types=attack_types)
+        
+        # Test detection for each combination
         evaluation_results = {}
         
-        for epsilon in epsilon_values:
-            print(f"\n🎯 Evaluating epsilon = {epsilon}")
-            results = self.test_detection_methods(adversarial_samples, epsilon)
-            evaluation_results[epsilon] = results
+        for attack_type in attack_types:
+            attack_results = {}
+            for epsilon in epsilon_values:
+                print(f"\n🎯 Evaluating {attack_type.upper()} with epsilon = {epsilon}")
+                results = self.test_detection_methods(adversarial_samples, epsilon, attack_type)
+                attack_results[epsilon] = results
+            evaluation_results[attack_type] = attack_results
         
         # Create summary visualization
         self._visualize_comprehensive_results(evaluation_results)
@@ -409,29 +461,32 @@ class ExperimentRunner:
 
     def _visualize_comprehensive_results(self, results: Dict[str, Any]) -> None:
         """Visualize comprehensive evaluation results"""
-        # Prepare data for epsilon vs performance plot
-        epsilon_performance = {}
-        
-        for epsilon, result in results.items():
-            if 'statistical_detection' in result and result['statistical_detection']:
-                stat_results = result['statistical_detection']
-                epsilon_performance[epsilon] = {
-                    'attack_success_rate': 0.7,  # Placeholder - would be computed from attack results
-                    'detection_rate': stat_results.get('true_positive_rate', 0)
-                }
-        
-        if epsilon_performance:
-            plot_epsilon_vs_performance(epsilon_performance)
+        # Prepare data for epsilon vs performance plot for each attack type
+        for attack_type, attack_results in results.items():
+            epsilon_performance = {}
+            
+            for epsilon, result in attack_results.items():
+                if 'statistical_detection' in result and result['statistical_detection']:
+                    stat_results = result['statistical_detection']
+                    epsilon_performance[epsilon] = {
+                        'attack_success_rate': 0.7,  # Placeholder - computed from attack results
+                        'detection_rate': stat_results.get('true_positive_rate', 0)
+                    }
+            
+            if epsilon_performance:
+                print(f"\n📊 Performance Plot for {attack_type.upper()} attacks")
+                plot_epsilon_vs_performance(epsilon_performance)
 
-    def run_quick_demo(self, digit: int = 5) -> None:
+    def run_quick_demo(self, digit: int = 5, attack_type: str = "fgsm") -> None:
         """
-        Run a quick demonstration of the concept-based detection
+        Run a quick demonstration of the concept-based detection with ART
         
         Args:
             digit: Digit to demonstrate with
+            attack_type: Type of attack to use
         """
         print("\n" + "="*60)
-        print("🎬 QUICK DEMO")
+        print("🎬 QUICK DEMO (ART)")
         print("="*60)
         
         # Quick training (1 epoch for demo)
@@ -455,9 +510,15 @@ class ExperimentRunner:
         print("1️⃣ Original image analysis:")
         prediction, _ = self.vit_analyzer.visualize_mnist_attention(image, concept, task)
         
-        # Generate adversarial
-        print("\n2️⃣ Generating FGSM attack...")
-        adv_image = self.fgsm_attacker.generate_fgsm_attack(image, task, epsilon=0.15)
+        # Generate adversarial using ART
+        print(f"\n2️⃣ Generating {attack_type.upper()} attack...")
+        if attack_type.lower() == "fgsm":
+            adv_image = self.fgsm_attacker.generate_fgsm_attack(image, task, epsilon=0.15)
+        elif attack_type.lower() == "pgd":
+            adv_image = self.fgsm_attacker.generate_pgd_attack(image, task, epsilon=0.15)
+        else:
+            print(f"⚠️ Unsupported attack type: {attack_type}")
+            return
         
         # Test attack
         attack_result = self.fgsm_attacker.test_attack_success(image, adv_image, task)
@@ -476,23 +537,54 @@ class ExperimentRunner:
         
         clean_detection = self.concept_detector.detect_concept_inconsistency(image, task)
         adv_detection = self.concept_detector.detect_concept_inconsistency(
-            adv_image.squeeze(0), attack_result['adversarial_prediction']
+            adv_image.squeeze(0) if len(adv_image.shape) == 4 else adv_image, 
+            attack_result['adversarial_prediction']
         )
         
         print(f"Clean image detection: {'❌ False alarm' if clean_detection['is_adversarial'] else '✅ Correct'}")
         print(f"Adversarial detection: {'✅ Detected' if adv_detection['is_adversarial'] else '❌ Missed'}")
         
-        print(f"\n🎉 Demo complete!")
+        print(f"\n🎉 Demo complete! ({attack_type.upper()} attack)")
+
+    def test_art_attacks_directly(self, num_samples: int = 50) -> Dict[str, Any]:
+        """
+        Test ART attacks directly on the dataset
+        
+        Args:
+            num_samples: Number of samples to test
+            
+        Returns:
+            Results dictionary
+        """
+        print("\n" + "="*60)
+        print("🧪 TESTING ART ATTACKS DIRECTLY")
+        print("="*60)
+        
+        results = {}
+        
+        for attack_type in ["fgsm", "pgd"]:
+            print(f"\n🎯 Testing {attack_type.upper()} attacks...")
+            
+            attack_results = self.fgsm_attacker.evaluate_attack_success_rate(
+                self.test_dataset, 
+                epsilon=Config.DEFAULT_EPSILON,
+                num_samples=num_samples,
+                attack_type=attack_type
+            )
+            
+            results[attack_type] = attack_results
+        
+        return results
 
     def run_full_pipeline(self) -> Dict[str, Any]:
         """
-        Run the complete experimental pipeline
+        Run the complete experimental pipeline with ART integration
         
         Returns:
             Complete experimental results
         """
         print("\n" + "🚀"*30)
-        print("RUNNING COMPLETE XAI ADVERSARIAL DETECTION PIPELINE")
+        print("RUNNING COMPLETE XAI ADVERSARIAL DETECTION PIPELINE (ART)")
         print("🚀"*30)
         
         results = {}
@@ -505,23 +597,27 @@ class ExperimentRunner:
         training_results = self.train_even_odd_classifier()
         results['training'] = training_results
         
-        # Step 3: Train MLP (optional)
+        # Step 3: Test ART attacks directly
+        art_test_results = self.test_art_attacks_directly()
+        results['art_attacks'] = art_test_results
+        
+        # Step 4: Train MLP (optional)
         if Config.MLP_EPOCHS > 0:
             self.train_mlp_concept_mapper()
         
-        # Step 4: Setup detection
+        # Step 5: Setup detection
         self.setup_concept_detector()
         
-        # Step 5: Analyze clean samples
+        # Step 6: Analyze clean samples
         clean_analysis = self.analyze_clean_samples()
         results['clean_analysis'] = clean_analysis
         
-        # Step 6: Comprehensive evaluation
+        # Step 7: Comprehensive evaluation with ART
         evaluation_results = self.run_comprehensive_evaluation()
         results['evaluation'] = evaluation_results
         
         print("\n" + "✅"*30)
-        print("PIPELINE COMPLETED SUCCESSFULLY!")
+        print("PIPELINE COMPLETED SUCCESSFULLY! (ART-ENABLED)")
         print("✅"*30)
         
         return results

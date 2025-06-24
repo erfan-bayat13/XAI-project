@@ -28,18 +28,13 @@ class AttentionToConceptMLP(nn.Module):
         """
         super().__init__()
         self.mlp = nn.Sequential(
-            # Input normalization
-            nn.BatchNorm1d(input_size),
-
             # First layer
             nn.Linear(input_size, Config.MLP_HIDDEN_SIZE_1),
-            nn.BatchNorm1d(Config.MLP_HIDDEN_SIZE_1),
             nn.ReLU(),
             nn.Dropout(Config.MLP_DROPOUT),
 
             # Second layer
             nn.Linear(Config.MLP_HIDDEN_SIZE_1, Config.MLP_HIDDEN_SIZE_2),
-            nn.BatchNorm1d(Config.MLP_HIDDEN_SIZE_2),
             nn.ReLU(),
             nn.Dropout(Config.MLP_DROPOUT),
             # Output layer

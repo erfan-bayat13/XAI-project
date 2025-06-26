@@ -113,6 +113,7 @@ def test_mlp_detector_comprehensive():
     # Step 10: Visualizations
     print("\n📊 Step 10: Creating visualizations...")
     create_comprehensive_visualizations(clean_results, adv_results, attack_analysis)
+    create_confidence_analysis_plots(clean_results, adv_results)
 
     return {
         'mlp_accuracy': mlp_accuracy,
@@ -490,6 +491,150 @@ def create_comprehensive_visualizations(clean_results, adv_results, attack_analy
 
     plt.tight_layout()
     plt.show()
+
+def create_confidence_analysis_plots(clean_results, adv_results):
+    """Create detailed confidence analysis plots"""
+    
+    fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+    fig.suptitle('MLP Confidence Analysis Under Adversarial Attacks', fontsize=16, fontweight='bold')
+    
+    # Extract confidence data
+    clean_mlp_confidences = [r['mlp_confidence'] for r in clean_results['detailed_results']]
+    adv_mlp_confidences = [r['adv_mlp_conf'] for r in adv_results['detailed_results']]
+    
+    # 1. Confidence Distribution Comparison
+    axes[0,0].hist(clean_mlp_confidences, alpha=0.7, label='Clean Images', bins=20, color='green', density=True)
+    axes[0,0].hist(adv_mlp_confidences, alpha=0.7, label='Adversarial Images', bins=20, color='red', density=True)
+    axes[0,0].set_xlabel('MLP Confidence')
+    axes[0,0].set_ylabel('Density')
+    axes[0,0].set_title('MLP Confidence Distribution')
+    axes[0,0].legend()
+    axes[0,0].grid(True, alpha=0.3)
+    
+    # Add statistics text
+    clean_mean = np.mean(clean_mlp_confidences)
+    adv_mean = np.mean(adv_mlp_confidences)
+    confidence_drop = clean_mean - adv_mean
+    
+    axes[0,0].text(0.02, 0.98, f'Clean μ={clean_mean:.3f}', transform=axes[0,0].transAxes, 
+                   verticalalignment='top', bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.8))
+    axes[0,0].text(0.02, 0.88, f'Adv μ={adv_mean:.3f}', transform=axes[0,0].transAxes, 
+                   verticalalignment='top', bbox=dict(boxstyle='round', facecolor='lightcoral', alpha=0.8))
+    axes[0,0].text(0.02, 0.78, f'Drop={confidence_drop:.3f}', transform=axes[0,0].transAxes, 
+                   verticalalignment='top', bbox=dict(boxstyle='round', facecolor='yellow', alpha=0.8))
+    
+    # 2. Per-Digit Confidence Drop
+    digit_conf_drops = {}
+    for result in adv_results['detailed_results']:
+        digit = result['digit']
+        if digit not in digit_conf_drops:
+            digit_conf_drops[digit] = []
+        
+        # Find corresponding clean confidence
+        clean_conf = next((r['mlp_confidence'] for r in clean_results['detailed_results'] 
+                          if r['digit'] == digit), 0.5)
+        conf_drop = clean_conf - result['adv_mlp_conf']
+        digit_conf_drops[digit].append(conf_drop)
+    
+    digits = sorted(digit_conf_drops.keys())
+    avg_drops = [np.mean(digit_conf_drops[d]) for d in digits]
+    colors = ['lightblue' if d % 2 == 0 else 'lightcoral' for d in digits]
+    
+    bars = axes[0,1].bar(digits, avg_drops, color=colors, alpha=0.7)
+    axes[0,1].set_xlabel('Digit')
+    axes[0,1].set_ylabel('Average Confidence Drop')
+    axes[0,1].set_title('Confidence Drop by Digit')
+    axes[0,1].grid(True, alpha=0.3)
+    
+    # Add value labels on bars
+    for bar, value in zip(bars, avg_drops):
+        axes[0,1].text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01,
+                      f'{value:.3f}', ha='center', va='bottom', fontweight='bold')
+    
+    # 3. Confidence vs Detection Score Scatter
+    detection_scores = [r['detection_score'] for r in adv_results['detailed_results']]
+    axes[0,2].scatter(adv_mlp_confidences, detection_scores, alpha=0.6, color='red')
+    axes[0,2].set_xlabel('MLP Confidence')
+    axes[0,2].set_ylabel('Detection Score')
+    axes[0,2].set_title('Confidence vs Detection Score')
+    axes[0,2].grid(True, alpha=0.3)
+    
+    # Add correlation coefficient
+    correlation = np.corrcoef(adv_mlp_confidences, detection_scores)[0,1]
+    axes[0,2].text(0.05, 0.95, f'Correlation: {correlation:.3f}', transform=axes[0,2].transAxes,
+                   bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+    
+    # 4. Concept Change Analysis
+    concept_changes = [r['concept_changed'] for r in adv_results['detailed_results']]
+    change_rate = np.mean(concept_changes)
+    
+    change_labels = ['No Change', 'Concept Changed']
+    change_counts = [concept_changes.count(False), concept_changes.count(True)]
+    
+    axes[1,0].pie(change_counts, labels=change_labels, autopct='%1.1f%%', 
+                  colors=['lightgreen', 'lightcoral'], startangle=90)
+    axes[1,0].set_title(f'Concept Changes Under Attack\n(Rate: {change_rate:.3f})')
+    
+    # 5. Attack Success vs Confidence Drop
+    attack_successes = []
+    conf_drops = []
+    
+    for result in adv_results['detailed_results']:
+        attack_successes.append(result['clean_task_pred'] != result['adv_task_pred'])
+        clean_conf = next((r['mlp_confidence'] for r in clean_results['detailed_results'] 
+                          if r['digit'] == result['digit']), 0.5)
+        conf_drops.append(clean_conf - result['adv_mlp_conf'])
+    
+    success_drops = [conf_drops[i] for i, success in enumerate(attack_successes) if success]
+    failed_drops = [conf_drops[i] for i, success in enumerate(attack_successes) if not success]
+    
+    axes[1,1].hist(success_drops, alpha=0.7, label='Successful Attacks', bins=15, color='red', density=True)
+    axes[1,1].hist(failed_drops, alpha=0.7, label='Failed Attacks', bins=15, color='green', density=True)
+    axes[1,1].set_xlabel('Confidence Drop')
+    axes[1,1].set_ylabel('Density')
+    axes[1,1].set_title('Confidence Drop: Successful vs Failed Attacks')
+    axes[1,1].legend()
+    axes[1,1].grid(True, alpha=0.3)
+    
+    # 6. ROC-like Curve for Detection Threshold
+    thresholds = np.linspace(0, 1, 100)
+    tpr_vals = []
+    fpr_vals = []
+    
+    clean_detection_scores = [r['detection_score'] for r in clean_results['detailed_results']]
+    adv_detection_scores = [r['detection_score'] for r in adv_results['detailed_results']]
+    
+    for threshold in thresholds:
+        tp = sum(1 for score in adv_detection_scores if score >= threshold)
+        fp = sum(1 for score in clean_detection_scores if score >= threshold)
+        
+        tpr = tp / len(adv_detection_scores) if adv_detection_scores else 0
+        fpr = fp / len(clean_detection_scores) if clean_detection_scores else 0
+        
+        tpr_vals.append(tpr)
+        fpr_vals.append(fpr)
+    
+    axes[1,2].plot(fpr_vals, tpr_vals, 'b-', linewidth=2)
+    axes[1,2].plot([0, 1], [0, 1], 'r--', alpha=0.8)  # Random classifier line
+    axes[1,2].set_xlabel('False Positive Rate')
+    axes[1,2].set_ylabel('True Positive Rate')
+    axes[1,2].set_title('ROC Curve for Detection')
+    axes[1,2].grid(True, alpha=0.3)
+    
+    # Calculate AUC
+    auc = np.trapz(tpr_vals, fpr_vals)
+    axes[1,2].text(0.6, 0.2, f'AUC: {abs(auc):.3f}', transform=axes[1,2].transAxes,
+                   bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+    
+    plt.tight_layout()
+    plt.show()
+    
+    return {
+        'avg_confidence_drop': confidence_drop,
+        'concept_change_rate': change_rate,
+        'auc': abs(auc),
+        'per_digit_drops': dict(zip(digits, avg_drops))
+    }
 
 
 def main():

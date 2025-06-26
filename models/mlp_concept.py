@@ -377,7 +377,7 @@ def detect_adversarial_with_mlp(vit_model: nn.Module,
 
         # If MLP predicts different concept that leads to different task, it's likely adversarial
         # Also consider low confidence as a potential indicator
-        is_adversarial = (predicted_concept_task != predicted_task) or (concept_confidence < Config.CONFIDENCE_THRESHOLD)
+        is_adversarial = (concept_confidence < Config.CONFIDENCE_THRESHOLD)
 
         return {
             'is_adversarial': is_adversarial,
